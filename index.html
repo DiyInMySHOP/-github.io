@@ -29,6 +29,8 @@ input:focus-visible,button:focus-visible{outline:2px solid var(--gold);outline-o
 #bubble{position:fixed;max-width:240px;background:#fff;color:#1b1b2e;padding:8px 10px;border-radius:10px;font-size:.9rem;pointer-events:none;opacity:0;transition:opacity .2s;transform:translate(-50%,-110%);z-index:5}
 #feed{position:fixed;right:12px;top:calc(56px + env(safe-area-inset-top));width:200px;font-size:.78rem;color:var(--muted);pointer-events:none;text-align:right}
 #feed div{margin-bottom:5px;text-shadow:0 1px 6px #000}
+#snd{position:fixed;left:14px;top:calc(72px + env(safe-area-inset-top));background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:999px;padding:6px 12px;font:inherit;font-size:.85rem;cursor:pointer}
+#snd[aria-pressed=true]{border-color:var(--gold);color:var(--gold)}
 .mode{position:fixed;left:14px;top:calc(44px + env(safe-area-inset-top));font-size:.72rem;color:#ffb3a0;max-width:55%}
 @media(max-width:480px){#feed{display:none}}
 @media(prefers-reduced-motion:reduce){#bubble{transition:none}}
@@ -38,6 +40,7 @@ input:focus-visible,button:focus-visible{outline:2px solid var(--gold);outline-o
 <canvas id="scene" aria-label="แม่น้ำยามค่ำคืนวันลอยกระทง"></canvas>
 <div class="top"><h1>ลอยกระทง</h1><div class="online"><span class="dot"></span><span><b id="count">1</b> คนกำลังลอยอยู่</span></div></div>
 <div class="mode" id="mode"></div>
+<button id="snd" aria-pressed="false">🔇 เปิดเสียงดนตรี</button>
 <div id="feed"></div>
 <div id="bubble"></div>
 <section class="panel">
@@ -191,9 +194,63 @@ go.onclick = ()=>{
   const k = { type:selType, wish:sanitize(wishEl.value), x:spot.x, y:spot.y, t: Date.now()+offset, s:Math.random()*6 };
   if(db){ db.ref("krathongs").push({...k, t: firebase.database.ServerValue.TIMESTAMP}); }
   else { kr.set("me"+k.t, k); pushFeed(k.wish); }
-  wishEl.value=""; go.disabled=true; setTimeout(()=>go.disabled=false, 2500);
+  Snd.bell(); wishEl.value=""; go.disabled=true; setTimeout(()=>go.disabled=false, 2500);
 };
 wishEl.addEventListener("keydown", e=>{ if(e.key==="Enter") go.click(); });
+
+
+/* ---------- เสียงดนตรี (สร้างสดด้วย Web Audio ไม่ต้องมีไฟล์เสียง) ---------- */
+const Snd = (()=>{
+  let ac, master, on=false, timer, step=0, idx=4, nodes=[];
+  const scale=[293.66,329.63,370.0,440,493.88,587.33,659.25,740,880]; // D E F# A B (เพนทาโทนิก)
+  function init(){
+    ac = new (window.AudioContext||window.webkitAudioContext)();
+    master = ac.createGain(); master.gain.value = 0; master.connect(ac.destination);
+    // เสียงสะท้อน
+    const dly = ac.createDelay(1); dly.delayTime.value=.42; const fb=ac.createGain(); fb.gain.value=.3;
+    const lp=ac.createBiquadFilter(); lp.type="lowpass"; lp.frequency.value=1500;
+    dly.connect(lp); lp.connect(fb); fb.connect(dly); lp.connect(master);
+    const bus = ac.createGain(); bus.gain.value=1; bus.connect(master); bus.connect(dly); init.bus=bus;
+    // เสียงน้ำไหล
+    const len=ac.sampleRate*2, buf=ac.createBuffer(1,len,ac.sampleRate), d=buf.getChannelData(0);
+    let last=0; for(let i=0;i<len;i++){ const w=Math.random()*2-1; last=(last+.02*w)/1.02; d[i]=last*3.5; }
+    const n=ac.createBufferSource(); n.buffer=buf; n.loop=true;
+    const f=ac.createBiquadFilter(); f.type="lowpass"; f.frequency.value=650;
+    const g=ac.createGain(); g.gain.value=.07; n.connect(f); f.connect(g); g.connect(master); n.start();
+    const lfo=ac.createOscillator(), lg=ac.createGain(); lfo.frequency.value=.13; lg.gain.value=220; lfo.connect(lg); lg.connect(f.frequency); lfo.start();
+    // เสียงพื้นนุ่มๆ
+    [146.83,220,293.66].forEach((fr,i)=>{ const o=ac.createOscillator(); o.type="sine"; o.frequency.value=fr;
+      const og=ac.createGain(); og.gain.value=.018; const tl=ac.createOscillator(), tg=ac.createGain(); tl.frequency.value=.07+i*.03; tg.gain.value=.01;
+      tl.connect(tg); tg.connect(og.gain); o.connect(og); og.connect(master); o.start(); tl.start(); });
+  }
+  function pluck(fr, t, vel=.07){
+    const o=ac.createOscillator(), o2=ac.createOscillator(), g=ac.createGain();
+    o.type="triangle"; o.frequency.value=fr; o2.type="sine"; o2.frequency.value=fr*2;
+    g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(vel,t+.03); g.gain.exponentialRampToValueAtTime(.0008,t+1.6);
+    o.connect(g); o2.connect(g); g.connect(init.bus); o.start(t); o2.start(t); o.stop(t+1.7); o2.stop(t+1.7);
+  }
+  function tick(){
+    if(!on) return;
+    const t=ac.currentTime+.05;
+    // ทำนองสุ่มเดินทีละขั้น จังหวะช้าๆ แบบระนาด
+    if(Math.random()<.55){ idx=Math.max(0,Math.min(scale.length-1, idx+[-2,-1,-1,0,1,1,2][Math.random()*7|0])); pluck(scale[idx],t, step%4===0?.08:.05); }
+    if(step%8===0) pluck(scale[0]/2, t, .07);
+    step++; timer=setTimeout(tick, 750+Math.random()*350);
+  }
+  return {
+    toggle(){
+      if(!ac) init(); if(ac.state==="suspended") ac.resume();
+      on=!on; master.gain.cancelScheduledValues(ac.currentTime);
+      master.gain.linearRampToValueAtTime(on?.5:0, ac.currentTime+1.2);
+      clearTimeout(timer); if(on) tick(); return on;
+    },
+    bell(){ if(!on) return; const t=ac.currentTime;
+      [880,1320,1760,2640].forEach((fr,i)=>{ const o=ac.createOscillator(), g=ac.createGain(); o.type="sine"; o.frequency.value=fr;
+        g.gain.setValueAtTime(.05/(i+1),t); g.gain.exponentialRampToValueAtTime(.0005,t+2.4); o.connect(g); g.connect(init.bus); o.start(t); o.stop(t+2.5); }); }
+  };
+})();
+const sndBtn=document.getElementById("snd");
+sndBtn.onclick=()=>{ const on=Snd.toggle(); sndBtn.setAttribute("aria-pressed",on); sndBtn.textContent=on?"🔊 ปิดเสียงดนตรี":"🔇 เปิดเสียงดนตรี"; };
 
 /* ---------- ออนไลน์ ---------- */
 const countEl = document.getElementById("count");
