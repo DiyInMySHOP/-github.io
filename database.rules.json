@@ -1,0 +1,13 @@
+{
+  "rules": {
+    "presence": { ".read": true, "$id": { ".write": true, ".validate": "newData.isBoolean()" } },
+    "krathongs": {
+      ".read": true,
+      ".indexOn": ["t"],
+      "$id": {
+        ".write": "!data.exists()",
+        ".validate": "newData.hasChildren(['type','wish','x','y','t']) && newData.child('wish').isString() && newData.child('wish').val().length <= 60 && newData.child('type').val() >= 0 && newData.child('type').val() <= 3 && newData.child('x').val() >= 0 && newData.child('x').val() <= 1 && newData.child('y').val() >= 0 && newData.child('y').val() <= 1 && newData.child('t').val() == now"
+      }
+    }
+  }
+}

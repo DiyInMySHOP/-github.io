@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ลอยกระทงออนไลน์</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Mitr:wght@400;500&family=Sarabun:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#0e1330;--panel:#161c42ee;--gold:#f5c04a;--text:#f3ecd9;--muted:#9aa3d1;--line:#ffffff22}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--ink);color:var(--text);font-family:Sarabun,system-ui,sans-serif;overflow:hidden}
+canvas#scene{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:manipulation}
+.top{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:flex-start;padding:calc(12px + env(safe-area-inset-top)) 14px 0;pointer-events:none}
+h1{font:500 1.35rem Mitr,sans-serif;margin:0;color:var(--gold);text-shadow:0 2px 12px #000a}
+.online{background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:.9rem;display:flex;gap:8px;align-items:center}
+.dot{width:8px;height:8px;border-radius:50%;background:#5fe38a;box-shadow:0 0 8px #5fe38a}
+.panel{position:fixed;left:50%;transform:translateX(-50%);bottom:0;width:min(560px,100%);background:var(--panel);backdrop-filter:blur(8px);border:1px solid var(--line);border-bottom:0;border-radius:18px 18px 0 0;padding:14px 14px calc(14px + env(safe-area-inset-bottom))}
+.types{display:flex;gap:8px;justify-content:space-between}
+.types button{flex:1;background:#ffffff0d;border:2px solid transparent;border-radius:12px;padding:2px 0 4px;color:var(--text);font:inherit;font-size:.78rem;cursor:pointer}
+.types button[aria-pressed=true]{border-color:var(--gold);background:#f5c04a22}
+.types canvas{width:100%;height:54px;display:block}
+.row{display:flex;gap:8px;margin-top:10px}
+input{flex:1;min-width:0;background:#0b0f2a;border:1px solid var(--line);border-radius:10px;padding:11px 12px;color:var(--text);font:inherit;font-size:1rem}
+input:focus-visible,button:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+#go{background:var(--gold);color:#2a1b00;border:0;border-radius:10px;padding:0 18px;font:500 1rem Mitr,sans-serif;cursor:pointer}
+#go:disabled{opacity:.5}
+.hint{margin:8px 0 0;font-size:.78rem;color:var(--muted)}
+#bubble{position:fixed;max-width:240px;background:#fff;color:#1b1b2e;padding:8px 10px;border-radius:10px;font-size:.9rem;pointer-events:none;opacity:0;transition:opacity .2s;transform:translate(-50%,-110%);z-index:5}
+#feed{position:fixed;right:12px;top:calc(56px + env(safe-area-inset-top));width:200px;font-size:.78rem;color:var(--muted);pointer-events:none;text-align:right}
+#feed div{margin-bottom:5px;text-shadow:0 1px 6px #000}
+.mode{position:fixed;left:14px;top:calc(44px + env(safe-area-inset-top));font-size:.72rem;color:#ffb3a0;max-width:55%}
+@media(max-width:480px){#feed{display:none}}
+@media(prefers-reduced-motion:reduce){#bubble{transition:none}}
+</style>
+</head>
+<body>
+<canvas id="scene" aria-label="แม่น้ำยามค่ำคืนวันลอยกระทง"></canvas>
+<div class="top"><h1>ลอยกระทง</h1><div class="online"><span class="dot"></span><span><b id="count">1</b> คนกำลังลอยอยู่</span></div></div>
+<div class="mode" id="mode"></div>
+<div id="feed"></div>
+<div id="bubble"></div>
+<section class="panel">
+  <div class="types" id="types"></div>
+  <div class="row">
+    <input id="wish" maxlength="60" placeholder="พิมพ์คำอธิษฐานของคุณ" autocomplete="off">
+    <button id="go">ลอยเลย</button>
+  </div>
+  <p class="hint">แตะที่แม่น้ำเพื่อเลือกจุดลอย · แตะกระทงเพื่ออ่านคำอธิษฐาน</p>
+</section>
+<script src="config.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<script>
+"use strict";
+const LIFE = 150000;             // กระทงลอยอยู่ 150 วินาที
+const TYPES = [
+  {name:"บัวชมพู", petal:"#f58bb3", petal2:"#ffd3e3", base:"#7bbf6a"},
+  {name:"ใบตอง", petal:"#8fd16b", petal2:"#d5f2a8", base:"#3f9a4a"},
+  {name:"ดาวเรือง", petal:"#ffb21f", petal2:"#ffe08a", base:"#7bbf6a"},
+  {name:"ขาวบริสุทธิ์", petal:"#f4f1ff", petal2:"#ffffff", base:"#9fb7e8"}
+];
+let selType = 0, spot = {x:.18, y:.78};
+const kr = new Map();           // id -> {type,wish,x,y,t}
+let offset = 0, online = 1, db = null, myId = Math.random().toString(36).slice(2);
+
+/* ---------- วาดกระทง ---------- */
+function drawKrathong(c, x, y, s, type, time, alpha=1){
+  const T = TYPES[type]; c.save(); c.translate(x,y); c.scale(s,s); c.globalAlpha = alpha;
+  c.fillStyle = T.base; c.beginPath(); c.ellipse(0,6,30,9,0,0,7); c.fill();
+  c.fillStyle = "#00000022"; c.beginPath(); c.ellipse(0,9,30,5,0,0,7); c.fill();
+  for(let r=0;r<2;r++){
+    const n = 7, rad = r? 12: 21;
+    for(let i=0;i<n;i++){
+      const a = Math.PI + (i/(n-1))*Math.PI, px = Math.cos(a)*rad, py = -Math.abs(Math.sin(a))*(r?10:7)+2;
+      c.save(); c.translate(px,py); c.rotate((a-Math.PI*1.5)*0.7);
+      c.fillStyle = r? T.petal2: T.petal; c.beginPath(); c.ellipse(0,-6,5.5,12-r*2,0,0,7); c.fill(); c.restore();
+    }
+  }
+  c.fillStyle = "#fff3c4"; c.fillRect(-2,-26,4,18);
+  const f = 1 + Math.sin(time/90 + x)*0.12;
+  const g = c.createRadialGradient(0,-32,1,0,-32,22); g.addColorStop(0,"#ffd36a99"); g.addColorStop(1,"#ffd36a00");
+  c.fillStyle = g; c.fillRect(-24,-56,48,48);
+  c.fillStyle = "#ffb02e"; c.beginPath(); c.ellipse(0,-31,3.4*f,6.5*f,0,0,7); c.fill();
+  c.fillStyle = "#fff6c8"; c.beginPath(); c.ellipse(0,-30,1.6,3.6*f,0,0,7); c.fill();
+  c.restore();
+}
+const tw = document.getElementById("types");
+TYPES.forEach((T,i)=>{
+  const b = document.createElement("button"); b.setAttribute("aria-pressed", i===0);
+  const cv = document.createElement("canvas"); cv.width = 160; cv.height = 108; b.append(cv, T.name);
+  drawKrathong(cv.getContext("2d"), 80, 78, 1.35, i, 0);
+  b.onclick = ()=>{ selType = i; [...tw.children].forEach((x,j)=>x.setAttribute("aria-pressed", j===i)); };
+  tw.append(b);
+});
+
+/* ---------- ฉาก ---------- */
+const cv = document.getElementById("scene"), c = cv.getContext("2d");
+let W, H, DPR, stars = [];
+function resize(){
+  DPR = Math.min(devicePixelRatio||1, 2); W = innerWidth; H = innerHeight;
+  cv.width = W*DPR; cv.height = H*DPR; c.setTransform(DPR,0,0,DPR,0,0);
+  stars = Array.from({length:90},()=>({x:Math.random()*W,y:Math.random()*H*.42,r:Math.random()*1.3+.3,p:Math.random()*6}));
+}
+addEventListener("resize", resize); resize();
+
+function temple(ox, base, u, col, lit){
+  // วัดฝั่งตรงข้าม: พระอุโบสถ + เจดีย์ทรงระฆัง
+  c.fillStyle = col;
+  const roof=(cx,w,y,h)=>{c.beginPath();c.moveTo(cx-w,y);c.quadraticCurveTo(cx-w*.2,y-h*.1,cx,y-h);c.quadraticCurveTo(cx+w*.2,y-h*.1,cx+w,y);c.closePath();c.fill();};
+  c.fillRect(ox-90*u, base-46*u, 180*u, 46*u);
+  roof(ox, 112*u, base-46*u, 34*u); roof(ox, 90*u, base-70*u, 30*u); // หลังคาซ้อน
+  c.fillRect(ox-70*u, base-46*u-1, 140*u, 4*u);
+  // เจดีย์
+  const cx = ox + 190*u;
+  c.beginPath(); c.moveTo(cx-34*u,base); c.quadraticCurveTo(cx-34*u,base-50*u,cx-12*u,base-80*u);
+  c.lineTo(cx-7*u,base-120*u); c.lineTo(cx,base-170*u); c.lineTo(cx+7*u,base-120*u); c.lineTo(cx+12*u,base-80*u);
+  c.quadraticCurveTo(cx+34*u,base-50*u,cx+34*u,base); c.closePath(); c.fill();
+  c.fillRect(cx-40*u, base-8*u, 80*u, 8*u);
+  // ศาลาเล็ก
+  c.fillRect(ox-250*u, base-30*u, 70*u, 30*u); roof(ox-215*u, 48*u, base-30*u, 24*u);
+  if(lit){ c.fillStyle="#ffcf6b"; for(let i=-3;i<=3;i++) c.fillRect(ox+i*22*u-4*u, base-34*u, 8*u, 16*u);
+    c.fillRect(cx-4*u, base-24*u, 8*u, 14*u); c.fillRect(ox-222*u, base-20*u, 7*u, 12*u); }
+}
+function scene(time){
+  const hz = H*.5;
+  const sky = c.createLinearGradient(0,0,0,hz); sky.addColorStop(0,"#070a22"); sky.addColorStop(1,"#3a2a5e"); c.fillStyle = sky; c.fillRect(0,0,W,hz);
+  for(const s of stars){ c.globalAlpha = .5 + .5*Math.sin(time/700+s.p); c.fillStyle="#fff"; c.fillRect(s.x,s.y,s.r,s.r); } c.globalAlpha = 1;
+  const mx = W*.78, my = H*.14, mr = Math.min(W,H)*.07;
+  const mg = c.createRadialGradient(mx,my,mr*.5,mx,my,mr*4); mg.addColorStop(0,"#ffe9a855"); mg.addColorStop(1,"#ffe9a800"); c.fillStyle=mg; c.fillRect(mx-mr*4,my-mr*4,mr*8,mr*8);
+  c.fillStyle="#fff1c2"; c.beginPath(); c.arc(mx,my,mr,0,7); c.fill();
+  // ฝั่งตรงข้าม
+  c.fillStyle="#120f2a"; c.fillRect(0,hz-10,W,12);
+  const u = Math.max(.55, Math.min(1.25, W/760)), tx = W*.36;
+  temple(tx, hz-6, u, "#120f2a", true);
+  // น้ำ
+  const wg = c.createLinearGradient(0,hz,0,H); wg.addColorStop(0,"#1c2457"); wg.addColorStop(1,"#080b22"); c.fillStyle = wg; c.fillRect(0,hz,W,H-hz);
+  // เงาวัด
+  c.save(); c.translate(0,hz*2-12); c.scale(1,-1); c.globalAlpha=.28; c.beginPath(); c.rect(0,hz-6-260*u,W,300*u); c.clip();
+  temple(tx, hz-6, u, "#6a5aa8", true); c.restore();
+  c.save(); c.globalAlpha=.07; c.fillStyle="#ffe9a8"; for(let i=0;i<14;i++){ const y = hz+10+i*(H-hz)/14, w = mr*(1.3-i*.06);
+    c.fillRect(mx-w+Math.sin(time/900+i)*8, y, w*2, 2); } c.restore();
+  // ประกายคลื่น
+  c.strokeStyle="#ffffff10"; c.lineWidth=1;
+  for(let i=0;i<22;i++){ const y = hz+20+((i*47)%(H-hz-20)), x = (i*131+time/60*(0.4+i%3*.2))%W; c.beginPath(); c.moveTo(x,y); c.lineTo(x+26,y); c.stroke(); }
+  // จุดลอย (ท่าน้ำ)
+  const pulse = 1+Math.sin(time/400)*.15;
+  c.strokeStyle="#f5c04acc"; c.lineWidth=2; c.beginPath(); c.ellipse(spot.x*W, spot.y*H+8, 34*pulse, 9*pulse, 0,0,7); c.stroke();
+}
+
+/* ---------- ตำแหน่งกระทง (คำนวณจากเวลาเกิด ทุกคนเห็นตรงกัน) ---------- */
+function pos(k, now){
+  const p = (now - k.t)/LIFE, sc = .55 + k.y*.75;
+  return { p, sc, x: (k.x + p*.5 + Math.sin((now)/1400 + k.s)*.004)*W, y: (k.y - p*.2 + Math.sin(now/900 + k.s)*.004)*H };
+}
+const bubble = document.getElementById("bubble"); let bubTimer;
+function frame(time){
+  const now = Date.now() + offset; scene(time);
+  const arr = [...kr.entries()].sort((a,b)=>a[1].y-b[1].y);
+  for(const [id,k] of arr){
+    const P = pos(k, now); k.P = P;
+    if(P.p > 1 || P.x > W+80){ if(id!==myId+"_x") kr.delete(id); continue; }
+    const a = P.p<0?0: Math.min(1, P.p*12, (1-P.p)*8);
+    // เงา/แสงสะท้อนบนน้ำ
+    c.save(); c.globalAlpha = a*.3; c.translate(P.x, P.y+10*P.sc); c.scale(1,-.35); drawKrathong(c,0,0,P.sc*1.0,k.type,time,.4); c.restore();
+    drawKrathong(c, P.x, P.y, P.sc, k.type, time, a);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* ---------- แตะ ---------- */
+cv.addEventListener("pointerdown", e=>{
+  const now = Date.now()+offset;
+  let hit=null, best=1e9;
+  for(const k of kr.values()){ if(!k.P) continue; const dx=e.clientX-k.P.x, dy=e.clientY-(k.P.y-14*k.P.sc), d=dx*dx+dy*dy;
+    if(d < (34*k.P.sc)**2 && d<best){best=d; hit=k;} }
+  if(hit){ bubble.textContent = "🪷 " + (hit.wish||"(ไม่ได้เขียนคำอธิษฐาน)"); bubble.style.left = e.clientX+"px"; bubble.style.top = (e.clientY-20)+"px"; bubble.style.opacity=1;
+    clearTimeout(bubTimer); bubTimer=setTimeout(()=>bubble.style.opacity=0,3500); return; }
+  if(e.clientY > H*.55 && e.clientY < H*.93 && e.target===cv){ spot.x = Math.max(.04, Math.min(.7, e.clientX/W)); spot.y = e.clientY/H; }
+});
+
+/* ---------- ฟีดคำอธิษฐาน ---------- */
+const feed = document.getElementById("feed");
+function pushFeed(w){ if(!w) return; const d=document.createElement("div"); d.textContent="🪷 "+w; feed.prepend(d); while(feed.children.length>5) feed.lastChild.remove(); setTimeout(()=>d.remove(), 20000); }
+
+/* ---------- ลอย ---------- */
+const wishEl = document.getElementById("wish"), go = document.getElementById("go");
+function sanitize(s){ return s.replace(/[\u0000-\u001f<>]/g,"").trim().slice(0,60); }
+go.onclick = ()=>{
+  const k = { type:selType, wish:sanitize(wishEl.value), x:spot.x, y:spot.y, t: Date.now()+offset, s:Math.random()*6 };
+  if(db){ db.ref("krathongs").push({...k, t: firebase.database.ServerValue.TIMESTAMP}); }
+  else { kr.set("me"+k.t, k); pushFeed(k.wish); }
+  wishEl.value=""; go.disabled=true; setTimeout(()=>go.disabled=false, 2500);
+};
+wishEl.addEventListener("keydown", e=>{ if(e.key==="Enter") go.click(); });
+
+/* ---------- ออนไลน์ ---------- */
+const countEl = document.getElementById("count");
+const cfg = window.FIREBASE_CONFIG;
+if(cfg && cfg.databaseURL){
+  firebase.initializeApp(cfg); db = firebase.database();
+  db.ref(".info/serverTimeOffset").on("value", s=>offset = s.val()||0);
+  const me = db.ref("presence/"+myId);
+  db.ref(".info/connected").on("value", s=>{ if(s.val()){ me.onDisconnect().remove(); me.set(true); } });
+  db.ref("presence").on("value", s=>{ countEl.textContent = s.numChildren(); });
+  const since = Date.now()+offset-LIFE;
+  db.ref("krathongs").orderByChild("t").startAt(since).limitToLast(150).on("child_added", s=>{
+    const k = s.val(); if(!k||typeof k.t!=="number") return; k.s = (k.t%1000)/160; kr.set(s.key,k);
+    if(Date.now()+offset-k.t < 5000) pushFeed(k.wish);
+  });
+} else {
+  document.getElementById("mode").textContent = "โหมดทดลอง: ยังไม่ได้ตั้งค่า Firebase จึงเห็นเฉพาะกระทงจำลอง (ดู README)";
+  const bots = ["ขอให้สอบผ่าน","ขอให้พ่อแม่สุขภาพแข็งแรง","ขอบคุณแม่คงคา","ขอให้ได้เจอคนดี","ขอให้ปลดหนี้หมดเร็วๆ","ขอให้ทุกคนมีความสุข","ขอให้ทำงานราบรื่น","ขอให้โชคดีตลอดปี"];
+  const spawn=()=>{ const t=Date.now(); kr.set("b"+t+Math.random(), {type:Math.random()*4|0, wish:bots[Math.random()*bots.length|0], x:.06+Math.random()*.4, y:.62+Math.random()*.28, t, s:Math.random()*6}); };
+  for(let i=0;i<7;i++){ spawn(); const k=[...kr.values()].pop(); k.t -= Math.random()*LIFE*.7; }
+  setInterval(()=>{ spawn(); pushFeed(bots[Math.random()*bots.length|0]); }, 6000);
+  const fake=()=>{ online = Math.max(2, Math.round(online + (Math.random()*5-2.4))); if(online<12) online=12; countEl.textContent=online; };
+  online=18; fake(); setInterval(fake,4000);
+}
+</script>
+</body>
+</html>
